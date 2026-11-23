@@ -73,22 +73,27 @@ Override any default in your profile's `cordis.patch.yml`:
 
 ## How it applies the persona
 
-On `agent/pre-step` the plugin registers a section named `deployment:persona` (order `0`) in the **agent's own scope**, which shadows the deployment persona for that agent only. If the revision does not expose a per-agent `systemPrompt` service, it falls back to a runtime-context contribution.
+On the `system-prompt/assemble` waterfall the plugin rewrites the section named `deployment:persona` in place, replacing only its text and leaving the surrounding sections (harness identity, tool guidance) untouched. Other agents and other scopes are unaffected.
 
-Unchanged personas are not re-registered: the plugin tracks a digest per agent.
+It hooks the assemble waterfall rather than `agent/pre-step` because `dsh-agent-loop` assembles the prompt **before** dispatching `agent/pre-step`; a persona registered there would land one step late, so the switch would only show up on the following turn.
+
+If the persona file is empty or missing, the assembly is left exactly as-is, so an empty `cloudPersonaFile` means "do not override on cloud routes".
 
 ## Verify
 
 ```bash
-node test/smoke.mjs   # pure helpers + a fake Cordis context
-node test/entry.mjs   # module entry shape
+node test/smoke.mjs      # pure helpers + a fake context (16 cases)
+node test/entry.mjs      # module entry shape
+node test/installed.mjs  # mounts into the real @deepseek-ai/cordis waterfall
 ```
+
+`test/installed.mjs` resolves everything from the `desktop` profile, so it verifies the copy that the app actually loads. Set `DSH_PROFILE_DIR` to point it at another profile.
 
 ## Limitations
 
-- Local detection is heuristic. A route with an unfamiliar provider id and no readable baseURL will be treated as cloud; add it to `localProviders`.
-- Persona text is applied only when the file is non-empty. An empty `cloudPersonaFile` therefore leaves the deployment persona untouched.
-- The baseURL lookup is best-effort; harness revisions that do not expose provider settings still work through provider-id rules.
+- Local detection is heuristic. A route with an unfamiliar provider id will be treated as cloud; add it to `localProviders`.
+- `provider` comes from `agent.options.provider` — the same value `dsh-agent-loop` uses to build the request route. `LlmProviderInfo` carries no endpoint, so `baseURL` is only available through the `baseURL` config option.
+- The `system-prompt/assemble` waterfall name and the `deployment:persona` section name are contract with the harness; renaming either requires updating this plugin.
 
 ## License
 

@@ -4,6 +4,13 @@
  * Swaps the DeepSeek Harness `deployment:persona` system-prompt section to a
  * different markdown file when the active model is served by a local provider.
  *
+ * Why the assemble waterfall and not `agent/pre-step`:
+ * `dsh-agent-loop` calls `systemPrompt.assemble()` BEFORE dispatching
+ * `agent/pre-step`. A persona registered inside the pre-step hook therefore
+ * lands one step too late — the turn that triggers the switch still renders the
+ * old persona. Hooking `system-prompt/assemble` edits the assembly that is
+ * about to be rendered, so the switch takes effect in the same step.
+ *
  * The plugin is environment-agnostic: it ships sensible defaults, resolves the
  * persona directory from $DSH_HOME (falling back to ~/.dsh), and lets every
  * rule be overridden through plugin config.
@@ -13,6 +20,8 @@
  *   resolveConfig(config)       Normalised configuration
  *   isLocalRoute({provider,baseURL}, config)
  *   personaKind(provider, baseURL, config) -> "local" | "cloud"
+ *   replacePersonaSection(assembly, text)   -> boolean
+ *   providerOfAgent(agent)      -> string | undefined
  */
 
 import { readFileSync, statSync } from "node:fs";
@@ -21,6 +30,12 @@ import { join, resolve as resolvePath } from "node:path";
 
 /** Section name the harness uses for the deployment persona (order 0). */
 export const PERSONA_SECTION = "deployment:persona";
+
+/** Prompt order of the persona slot. */
+export const PERSONA_ORDER = 0;
+
+/** Waterfall that owns the authoritative prompt assembly. */
+export const ASSEMBLE_EVENT = "system-prompt/assemble";
 
 /**
  * Provider-id fragments that usually mean "an endpoint on this machine".
@@ -84,7 +99,7 @@ export function resolveConfig(config) {
     localPatterns,
     /** Hostnames that force the local classification. */
     localHosts,
-    /** Optional baseURL override source; disabled unless configured. */
+    /** Fixed endpoint used for classification when no provider id matches. */
     baseURL: typeof c.baseURL === "string" ? c.baseURL : undefined,
     /** Markdown file used when the route is local. */
     localPersonaFile: resolvePath(
@@ -153,94 +168,74 @@ export function readPersonaFile(path) {
   }
 }
 
-/** Pull the provider id off an agent across harness revisions. */
-function providerOf(agent) {
+/**
+ * Read the provider route off an agent.
+ *
+ * `agent.options.provider` is what `dsh-agent-loop` itself uses to build the
+ * request route (see `buildRequest`), so it is the authoritative value. The
+ * remaining candidates only cover older/alternate revisions.
+ */
+export function providerOfAgent(agent) {
   if (!agent) return undefined;
   const candidates = [
+    agent.options?.provider,
     agent.provider,
     agent.modelSelection?.provider,
     agent.selection?.provider,
     agent.session?.header?.provider,
-    agent.session?.provider,
-    agent.session?.modelSelection?.provider,
   ];
   return candidates.find((v) => typeof v === "string" && v.length > 0);
 }
 
-function modelOf(agent) {
+/** Read the model id off an agent, for logging only. */
+function modelOfAgent(agent) {
   if (!agent) return undefined;
   const candidates = [
+    agent.options?.model,
     agent.model,
     agent.modelSelection?.model,
     agent.selection?.model,
     agent.session?.header?.model,
-    agent.session?.model,
   ];
   return candidates.find((v) => typeof v === "string" && v.length > 0);
 }
 
 /**
- * Resolve a route's baseURL from the harness settings service when it is
- * readable. This is strictly best-effort: any failure yields undefined and the
- * provider-id rules still apply.
+ * Replace (or insert) the deployment persona section in an assembly.
+ *
+ * The assembly is mutated in place and the same object is returned, because the
+ * waterfall's return value is authoritative and callers may have captured the
+ * original reference. Existing section metadata (name/order) is preserved; only
+ * `text` changes.
+ *
+ * @param {{sections: Array<{name: string, text: string}>}} assembly
+ * @param {string} text  Persona markdown. Empty text leaves the assembly alone.
+ * @returns {"replaced"|"inserted"|"unchanged"}
  */
-function baseURLFromSettings(ctx, provider, config) {
-  if (config.baseURL) return config.baseURL;
-  if (typeof provider !== "string" || provider.length === 0) return undefined;
-  let settings;
-  try {
-    settings = ctx.get("settings");
-  } catch {
-    return undefined;
-  }
-  if (!settings || typeof settings.get !== "function") return undefined;
+export function replacePersonaSection(assembly, text) {
+  if (!assembly || !Array.isArray(assembly.sections)) return "unchanged";
+  if (typeof text !== "string" || text.length === 0) return "unchanged";
 
-  const namespaces = [
-    "llm",
-    "@deepseek-ai/dsh-llm-pi-ai",
-    "@deepseek-ai/dsh-llm-ollama",
-    "llm-pi-ai",
-  ];
-  for (const ns of namespaces) {
-    let value;
-    try {
-      value = settings.get(ns);
-    } catch {
-      continue;
+  for (const section of assembly.sections) {
+    if (section && section.name === PERSONA_SECTION) {
+      if (section.text === text) return "unchanged";
+      section.text = text;
+      return "replaced";
     }
-    const found = findBaseURL(value, provider, 0);
-    if (found) return found;
   }
-  return undefined;
-}
 
-/** Depth-limited search for `<provider>.baseURL` inside a settings value. */
-function findBaseURL(value, provider, depth) {
-  if (depth > 4 || value === null || typeof value !== "object") return undefined;
-  const providers = value.providers ?? value;
-  if (providers && typeof providers === "object") {
-    const entry = providers[provider];
-    if (entry && typeof entry === "object") {
-      const candidate = entry.baseURL ?? entry.baseUrl ?? entry.url;
-      if (typeof candidate === "string" && candidate.length > 0) return candidate;
-    }
-  }
-  for (const child of Object.values(providers)) {
-    if (child && typeof child === "object") {
-      const hit = findBaseURL(child, provider, depth + 1);
-      if (hit) return hit;
-    }
-  }
-  return undefined;
+  // No persona slot in this scope: contribute one at the persona position.
+  assembly.sections.unshift({ name: PERSONA_SECTION, text });
+  return "inserted";
 }
 
 export function apply(ctx, config) {
   const cfg = resolveConfig(config);
 
-  /** Per-agent registration state: agent -> { disposer, kind, digest }. */
-  const applied = new WeakMap();
   /** path -> { text, mtimeMs, size } */
   const fileCache = new Map();
+  /** agent -> last classification, for change-only logging. */
+  const lastKind = new WeakMap();
 
   const readCached = (path) => {
     if (!path) return "";
@@ -268,17 +263,6 @@ export function apply(ctx, config) {
     return text;
   };
 
-  const disposeApplied = (agent) => {
-    const entry = applied.get(agent);
-    if (!entry) return;
-    applied.delete(agent);
-    try {
-      entry.disposer?.();
-    } catch {
-      // A partially constructed scope may already be torn down.
-    }
-  };
-
   ctx.effect(
     () => () => {
       fileCache.clear();
@@ -286,76 +270,38 @@ export function apply(ctx, config) {
     "local-persona-switch.cache",
   );
 
-  ctx.on("agent/pre-step", async ({ agent }, next) => {
-    const decision = await next();
+  ctx.on(ASSEMBLE_EVENT, async (assembly, assembleContext, next) => {
+    // Run the rest of the chain first so later listeners see the persona we
+    // install, and so we never clobber a section they add.
+    const result = await next();
+    const target = result ?? assembly;
 
     try {
-      const provider = providerOf(agent);
-      const model = modelOf(agent);
-      const baseURL = baseURLFromSettings(ctx, provider, cfg);
-      const kind = personaKind(provider, baseURL, cfg);
+      const agent = assembleContext?.agent ?? assembleContext?.scope;
+      const provider = providerOfAgent(agent);
+      const model = modelOfAgent(agent);
+      const kind = personaKind(provider, cfg.baseURL, cfg);
       const path = kind === "local" ? cfg.localPersonaFile : cfg.cloudPersonaFile;
       const text = path ? readCached(path) : "";
-      const digest = `${kind}:${path}:${text.length}`;
+      const outcome = replacePersonaSection(target, text);
 
-      const previous = applied.get(agent);
-      if (previous && previous.digest === digest) return decision;
-
-      // Project-local scope first: it shadows the deployment persona for this
-      // agent only. Fall back to a runtime-context contribution when the
-      // revision does not expose a per-agent systemPrompt service.
-      let disposer;
-      let via = "none";
-      try {
-        const scoped = agent?.ctx?.get?.("systemPrompt");
-        if (scoped && typeof scoped.section === "function" && text.length > 0) {
-          disposer = scoped.section({
-            name: PERSONA_SECTION,
-            order: 0,
-            text,
-          });
-          via = "agent-section";
-        }
-      } catch {
-        disposer = undefined;
-      }
-
-      if (via === "none" && text.length > 0) {
-        try {
-          const sp = ctx.get("systemPrompt");
-          if (sp && typeof sp.context === "function") {
-            disposer = sp.context({
-              name: "local-persona-switch:persona",
-              order: -1,
-              text,
-            });
-            via = "global-context";
-          }
-        } catch {
-          disposer = undefined;
-        }
-      }
-
-      disposeApplied(agent);
-      if (disposer) applied.set(agent, { disposer, digest, kind });
-
-      if (cfg.log && (!previous || previous.kind !== kind)) {
+      if (cfg.log && agent && lastKind.get(agent) !== kind) {
+        lastKind.set(agent, kind);
         ctx.logger?.info?.(
-          "local-persona-switch: provider=%s model=%s baseURL=%s -> %s persona via %s (%d chars)",
+          "local-persona-switch: provider=%s model=%s -> %s persona (%s, %d chars)",
           provider ?? "(unknown)",
           model ?? "(unknown)",
-          baseURL ?? "(unknown)",
           kind,
-          via,
+          outcome,
           text.length,
         );
       }
     } catch (error) {
-      // A persona swap must never break the turn.
+      // A persona swap must never break prompt assembly.
       ctx.logger?.warn?.("local-persona-switch: skipped (%s)", String(error));
     }
 
-    return decision;
+    return target;
   });
 }
 

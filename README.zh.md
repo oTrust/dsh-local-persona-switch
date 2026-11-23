@@ -73,32 +73,27 @@ dsh plugin --profile <你的profile> add dsh-local-persona-switch
 
 ## 生效方式
 
-在 `agent/pre-step` 阶段，插件以 **agent 自身的 scope** 注册名为 `deployment:persona`、order 为 `0` 的 section，只对该 agent 覆盖 deployment persona，不影响其他 agent。若当前版本没有 per-agent 的 `systemPrompt` 服务，则退化为注入一段 runtime context。
+插件挂在 `system-prompt/assemble` 瀑布上，**原地改写**名为 `deployment:persona` 的 section：只替换 `text`，保留 harness 身份、工具指引等相邻 section，其他 agent 与其他 scope 不受影响。
 
-人格内容未变化时不会重复注册：插件按 agent 记录 digest 去重。
+之所以不用 `agent/pre-step`：`dsh-agent-loop` 是**先**组装提示词、**再**派发 `agent/pre-step`。在 pre-step 里注册人格会晚一步，切换要到下一回合才体现。
+
+人格文件为空或不存在时不改动组装结果，因此把 `cloudPersonaFile` 设为空字符串等价于「云端不覆盖」。
 
 ## 验证
 
 ```bash
-node test/smoke.mjs   # 纯逻辑 + 模拟 Cordis 上下文
-node test/entry.mjs   # 模块入口导出
+node test/smoke.mjs      # 纯逻辑 + 模拟上下文（16 项）
+node test/entry.mjs      # 模块入口导出
+node test/installed.mjs  # 挂载进真实的 @deepseek-ai/cordis 瀑布
 ```
 
-实测（真实 `@deepseek-ai/cordis` 挂载并派发 `agent/pre-step`）结果：
-
-| provider | 结果 |
-|---|---|
-| `ollama` | 本地人格 |
-| `local-moe` | 本地人格 |
-| `openai` | 云端人格 |
-| `workbuddy` | 云端人格 |
+`test/installed.mjs` 从 `desktop` profile 解析依赖，验证的就是应用真正加载的那份副本。改 `DSH_PROFILE_DIR` 可指向别的 profile。
 
 ## 已知限制
 
-- 本地判定是启发式的：provider 名陌生且读不到 baseURL 时会被判为云端，需把它加进 `localProviders`。
-- 人格文本为空时不会应用覆盖；因此把 `cloudPersonaFile` 设为空字符串等价于「云端不覆盖」。
-- baseURL 读取是 best-effort；不暴露 provider settings 的 harness 版本仍可通过 provider 名规则正常工作。
-- 依赖 `agent/pre-step` 与 `systemPrompt.section`；若 harness 改动这两个接口，需要相应调整。
+- 本地判定是启发式的：provider 名陌生时会被判为云端，需把它加进 `localProviders`。
+- `provider` 取自 `agent.options.provider` —— 与 `dsh-agent-loop` 构造请求路由用的是同一个值。`LlmProviderInfo` 不含端点信息，因此 `baseURL` 只能通过配置项提供。
+- `system-prompt/assemble` 这个瀑布名和 `deployment:persona` 这个 section 名是与 harness 的契约，任一方改名都需要同步修改本插件。
 
 ## License
 
