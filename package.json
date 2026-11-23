@@ -1,0 +1,37 @@
+{
+  "name": "dsh-local-persona-switch",
+  "version": "0.1.0",
+  "description": "Switch the DeepSeek Harness deployment persona to a different markdown file when the active model is served by a local provider.",
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js"
+  },
+  "files": [
+    "index.js",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "persona",
+    "local-llm",
+    "ollama",
+    "llama.cpp"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node test/smoke.mjs && node test/entry.mjs"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}

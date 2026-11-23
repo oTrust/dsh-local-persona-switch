@@ -1,0 +1,7 @@
+# The dsh-local-persona-switch bundle patch.
+#
+# A bundle patch inserts rows into the profile tree; the profile's own
+# cordis.patch.yml can then override this row by id.
+- insert:
+    - id: local-persona-switch
+      name: dsh-local-persona-switch
