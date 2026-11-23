@@ -1,6 +1,7 @@
 # dsh-local-persona-switch
 
-[English](./README.md) | 中文
+[![English](https://img.shields.io/badge/README-English-blue)](./README.md)
+[![简体中文](https://img.shields.io/badge/README-%E7%AE%80%E4%BD%93%E4%B8%AD%E6%96%87-red)](./README.zh.md)
 
 一个 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 插件：根据当前模型是**本地部署**还是**云端**，自动把 deployment **persona（人格）** 切换成不同的 markdown 文件。
 

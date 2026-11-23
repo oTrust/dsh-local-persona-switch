@@ -1,6 +1,7 @@
 # dsh-local-persona-switch
 
-English | [中文](./README.zh.md)
+[![English](https://img.shields.io/badge/README-English-blue)](./README.md)
+[![简体中文](https://img.shields.io/badge/README-%E7%AE%80%E4%BD%93%E4%B8%AD%E6%96%87-red)](./README.zh.md)
 
 A [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) plugin that swaps the deployment **persona** to a different markdown file depending on whether the active model is served by a **local** provider or a **cloud** one.
 
