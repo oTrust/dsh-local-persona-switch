@@ -1,5 +1,7 @@
 # dsh-local-persona-switch
 
+English | [中文](./README.zh.md)
+
 A [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) plugin that swaps the deployment **persona** to a different markdown file depending on whether the active model is served by a **local** provider or a **cloud** one.
 
 Useful when a small local model needs a terser, faster persona while a cloud model keeps the full one.
